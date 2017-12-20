@@ -215,14 +215,14 @@ and insert_var env stack x s = match s with
 (* Quasi solved equation
    'x = (s₁,...sₙ)
    'x = (s₁,...sₙ) p
- *)
+*)
 and quasi_solved env stack x s =
   match Env.get env x with
   | None ->
     Env.attach env x s ;
     process env stack ;
 
-  (* Rule representative *)
+    (* Rule representative *)
   | Some (T.Var y) ->
     Env.attach env y s ;
     process env stack
@@ -384,4 +384,195 @@ module System = struct
     in
     let cut x = cut_aux range_const 0 x in
     DSystem.solve ~cut system
+end
+
+(** Extracted from cime3 ac_unif.ml *)
+module Dioph2Sol = struct
+
+  let sum_of_columns matrix =
+    let nb_lines = Array.length matrix
+    and nb_columns = Array.length matrix.(0) in
+    let sum = Array.make nb_columns 0 in
+    for i = 0 to nb_lines - 1 do
+      for j = 0 to pred nb_columns do
+        sum.(j) <- sum.(j) + matrix.(i).(j)
+      done
+    done;
+    sum
+
+  exception Found of int
+
+  let associated_var_with_sol sum_of_sols array_of_vars v_type sol =
+    try
+      for i = v_type.(0) to Array.length sol -1 do
+        if sol.(i) = 1 then raise (Found i)
+      done;
+      for i = 0 to v_type.(0) - 1 do
+        if sol.(i) = 1 && sum_of_sols.(i) = 1 then raise (Found i)
+      done;
+      None
+    with Found i ->
+      let var_of_index_i = array_of_vars.(i) in
+      Some var_of_index_i
+
+(*
+  [pcache v], where [v] is a bi-dimensional matrix of integers,
+  returns a vector of integers which encode vectors of bits, such that
+  each 1 corresponds to a non-zero integer of the transposed entry,
+  each 0 to a 0, in order to access directly to the column associated
+  with a variable.
+*)
+  let pcache v =
+    let nb_sol = Array.length v
+    and nb_var = Array.length v.(0) in
+    let cache = Array.make nb_var 0 in
+    for i=0 to (pred nb_var) do
+      for j=0 to (pred nb_sol) do
+        if v.(j).(i) > 0 then cache.(i) <- cache.(i) + (1 lsl j)
+      done
+    done;
+    cache
+
+(*
+   [(psmall_enough from_var to_var vect_sols_cache node)] checks
+   whether the subset of Diophantine solutions encoded by [node] is
+   small enough, that is does not instanciate the variables whose index
+   is between [from_var] and [to_var] (by another term than a
+   variable).
+*)
+  let psmall_enough from_var to_var vect_sols_cache node =
+    try
+      for i= from_var to (pred to_var) do
+        let p = node land vect_sols_cache.(i) in
+        if p land (pred p) <> 0
+        then (* not small enough for the ith constant *)
+          raise Exit
+      done;
+      true
+    with Exit -> false
+
+(*
+  [(pgreat_enough from_var to_var nb_digit vect_sols_cache node)]
+  whether the subset of Diophantine solutions encoded by [node] is
+  great enough, that is does not instanciate the variables whose index
+  is between [from_var] and [to_var] by the zero of the theory.
+*)
+  let pgreat_enough from_var to_var vect_sols_cache node =
+    try
+      for i = from_var to pred to_var do
+        let p = node land vect_sols_cache.(i) in
+        if p = 0
+        then (* not great enough for the ith variable or constant *)
+          raise Exit
+      done;
+      true
+    with Exit -> false
+
+  let rec cons_n n x l = if n <= 0 then l else cons_n (pred n) x (x::l)
+
+  exception Timeout
+
+  (* let linear_combination plus map_var_int vect_sols *)
+  (*     vect_new_var char_vect = *)
+
+  (*   let nb_sols = Array.length vect_sols in *)
+  (*   let nb_occ_new_var = Array.make nb_sols None in *)
+
+  (*   let build_value_of_var ix x = *)
+  (*     for i = 0 to pred nb_sols do *)
+  (*       nb_occ_new_var.(i) <- *)
+  (*         if char_vect.(i) = 0 *)
+  (*         then None *)
+  (*         else Some (vect_sols.(i).(ix),vect_new_var.(i)) *)
+  (*     done; *)
+
+  (*     let list_of_args = *)
+  (*       Array.fold_left *)
+  (*         (fun partial_list_of_args nb_occ_new_vari -> *)
+  (*            match nb_occ_new_vari with *)
+  (*            | None -> partial_list_of_args *)
+  (*            | Some (n,var) -> cons_n n var partial_list_of_args) *)
+  (*         [] nb_occ_new_var in *)
+
+  (*     match list_of_args with *)
+  (*     | [] -> raise Timeout *)
+  (*     | [t] -> t *)
+  (*     |  _ -> plus (List.sort compare_terms list_of_args) in *)
+
+  (*   TermVar.VarMap.map_key *)
+  (*     (fun x ix -> ((build_value_of_var ix x): term)) *)
+  (*     map_var_int *)
+
+  (* let split_solution var_var sigma = *)
+  (*   TermVar.VarMap.fold *)
+  (*     (fun x xval ((vvacc,vtacc) as acc) -> *)
+  (*        match xval.node with *)
+  (*        | Var y -> *)
+  (*          let x' = try TermVar.VarMap.find x vvacc with Not_found -> x in *)
+  (*          let y' = try TermVar.VarMap.find x vvacc with Not_found -> y in *)
+  (*          if TermVar.compare x' y' = 0 *)
+  (*          then acc *)
+  (*          else *)
+  (*            let vvacc' = *)
+  (*              TermVar.VarMap.add x' y' *)
+  (*                (TermVar.VarMap.map (fun v -> if TermVar.compare v x' = 0 then y' else v) vvacc) in *)
+  (*            let vtacc' = *)
+  (*              TermVar.VarMap.fold *)
+  (*                (fun v t acc -> *)
+  (*                   let v' = if TermVar.compare v x' = 0 then y' else v *)
+  (*                   and t' = apply_raw_subst vvacc' t in *)
+  (*                   TermVar.VarMap.add v' t' acc) *)
+  (*                vtacc TermVar.VarMap.empty in *)
+  (*            vvacc' , vtacc' *)
+  (*        | _ -> *)
+  (*          let x' = try TermVar.VarMap.find x vvacc with Not_found -> x in *)
+  (*          let xval' = apply_raw_subst vvacc xval in *)
+  (*          vvacc, (TermVar.VarMap.add x' xval' vtacc)) *)
+  (*     sigma (var_var,TermVar.VarMap.empty) *)
+
+
+  let get_solution ~hc ~vargen vars v_type dioph_sols =
+    let nb_var = Array.length vars in
+    let nb_true_var = v_type.(0) in
+    let nb_sols = Array.length dioph_sols in
+    if nb_sols = 0
+    then []
+    else
+      (* let sum_of_sols = sum_of_columns dioph_sols in *)
+      (* let vect_new_var = *)
+      (*   Array.map *)
+      (*     (function sol -> *)
+      (*        let ass_var_sol = *)
+      (*          associated_var_with_sol *)
+      (*            sum_of_sols vars v_type sol in *)
+      (*        match ass_var_sol with *)
+      (*        | Some var -> T.HC.hashcons hc var *)
+      (*        | None ->  T.HC.hashcons hc @@ fresh_var vargen) *)
+      (*     dioph_sols *)
+      (* in *)
+
+      let char_vect_list =
+        if nb_sols < 32 then
+          let dioph_sols_cache = pcache dioph_sols in
+          let test_ag = pgreat_enough 0 nb_var dioph_sols_cache
+          and test_ap = psmall_enough nb_true_var nb_var dioph_sols_cache in
+          List.rev_map
+            (Bit_field.Small.bit_field_to_vect_of_bits nb_sols)
+            (Hullot_bin_tree.Small.bin_tree nb_sols test_ag test_ap)
+        else
+          assert false
+      in
+
+      (* List.fold_left *)
+      (*   (fun acc char_vect -> *)
+      (*      try *)
+      (*        let sigma = *)
+      (*          linear_combination *)
+      (*            f map_var_int dioph_sols vect_new_var char_vect *)
+      (*        in *)
+      (*        (Some (fresh_var ()), split_solution var_var sigma) :: acc *)
+      (*      with Timeout -> acc) *)
+      (*   [] char_vect_list *)
+      char_vect_list
+
 end
