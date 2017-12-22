@@ -1,11 +1,11 @@
 # OASIS_START
-# DO NOT EDIT (digest: 8761a7ca711a89b9e1f8def9d38d4b73)
+# DO NOT EDIT (digest: 1055a17b80ca1fb7a7f72c7980a8f583)
 Typexpr
 Custom_set
 Database
 Imports
 Unification
 Variables
-Hullot_bin_tree
-Bit_field
+Hullot
+Bitv
 # OASIS_STOP

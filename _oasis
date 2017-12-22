@@ -18,7 +18,7 @@ Library diophantine
 
 Library dowsing
   Path: src
-  InternalModules: Hullot_bin_tree, Bit_field
+  InternalModules: Hullot, Bitv
   Modules: Typexpr, Custom_set, Database, Imports, Unification, Variables
   BuildDepends:
     compiler-libs.common,
