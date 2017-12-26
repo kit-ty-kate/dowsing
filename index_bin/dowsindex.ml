@@ -105,9 +105,16 @@ let unif s1 s2 =
     (Unification.occur_check env) ;
   let system = Unification.System.make env.pure_problems in
   Format.printf "@[<2>System: @,%a@]@." Unification.System.pp system ;
+  let sols = Unification.System.solutions system in
   Format.printf "@[<2>Solutions: @,%a@]@."
     (CCFormat.seq ~sep:Fmt.sp Unification.System.Solver.pp_sol)
-    (Unification.System.solutions system)
+    sols ;
+  let unifiers = Unification.Dioph2Sol.get_unifiers gen system sols in
+  (* Format.printf "@[<v2>Unifiers: @,%a@]@."
+   *   (CCFormat.seq ~sep:Fmt.cut Unification.Dioph2Sol.pp_unifier)
+   *   unifiers ; *)
+  Fmt.pr "%i@." (Sequence.length unifiers) ;
+  ()
 
 
 let file = "foo.db"

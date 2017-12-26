@@ -1,20 +1,22 @@
 module type S = sig
   type storage
   type t = private storage
-  val zeros : len:int ->  t
-  val ones  : len:int ->  t
+  val empty : t
   val (&&) : t -> t -> t
   val (||) : t -> t -> t
   val not : t -> t
-  val add : len:int -> t -> int -> t
-  val singleton : len:int -> int -> t
-  val all_until : len:int -> int -> t
+  val add : t -> int -> t
+  val singleton : int -> t
+  val all_until : int -> t
   val is_empty : t -> bool
-  (* val pp : len:int -> Format.formatter -> t -> unit *)
+  val mem : int -> t -> bool
+  val is_subset : t -> t -> bool
+  val is_singleton : t -> bool
+  val pp : Format.formatter -> t -> unit
 
   val storage : t -> storage
 
-  val max_length : int
+  val capacity : int
 end
 
 module Default = struct
@@ -22,20 +24,23 @@ module Default = struct
   type t = int
   type storage = int
 
-  let max_length = Sys.int_size - 1
+  let capacity = Sys.int_size - 1
   let check_len len =
-    assert (len <= max_length)
+    assert (len <= capacity)
 
-  let zeros ~len = check_len len ; 0
-  let ones ~len = check_len len ; (1 lsl len) - 1
+  let empty = 0
   let (&&) = (land)
   let (||) = (lor)
   let not = lnot
-  let singleton ~len i = check_len len ; assert (i <= len) ; 1 lsl i
-  let add ~len x i = x && singleton ~len i
-  let all_until ~len i = check_len len ; assert (i < len) ; (1 lsl (i+1) - 1)
-  let is_empty n = (n = 0)
+  let singleton i = check_len i ; 1 lsl i
+  let add x i = x || singleton i
+  let all_until i = check_len (i+1) ; (1 lsl (i+1) - 1)
 
-  (* let pp = Format.pp_print_int *)
+  let is_empty n = (n = 0)
+  let is_singleton n = n land (n-1) = 0
+  let is_subset i b = (i && b) <> 0
+  let mem i b = is_subset (singleton i) b
+
+  let pp = CCInt.pp_binary
   let storage x = x
 end

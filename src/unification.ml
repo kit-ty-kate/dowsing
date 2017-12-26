@@ -17,6 +17,7 @@ module Pure = struct
     | Pure of t
     | Tuple of t array
 
+  let dummy = Constant (Longident.Lident "dummy")
   let var x = Var x
   let constant p = Constant p
   let tuple p = Tuple p
@@ -27,6 +28,9 @@ module Pure = struct
   let pp fmt = function
     | Var i -> Var.pp fmt i
     | Constant p -> T.P.pp fmt p
+  let pp_term fmt = function
+    | Pure t -> pp fmt t
+    | Tuple t -> Fmt.pf fmt "@[<h>(%a)@]" Fmt.(array ~sep:(unit ",@ ") pp) t
 
   let pp_problem fmt {left ; right} =
     Fmt.pf fmt "%a = %a"
@@ -296,13 +300,14 @@ module System = struct
   module Solver = Dioph.Homogeneous_system
 
   type t = {
-    get : int -> Pure.t ;
-    range_const : int * int ; (* range of variable indices which are const, inclusive *)
-    system : Solver.t ;
+    nb_atom : int ; (* Number of atoms in each equation *)
+    assoc_pure : Pure.t array ; (* Map from indices to the associated pure terms *)
+    first_var : int ; (* Constants are at the beginning of the array, Variables at the end. *)
+    system : int array array ;
   }
 
-  let pp ppf {system; range_const = (i,j)} =
-    Fmt.pf ppf "%a | (%i - %i)" Solver.pp system i j
+  let pp ppf {system; _} =
+    Fmt.(vbox (array ~sep:cut @@ array ~sep:(unit ", ") int)) ppf system
 
   (* Replace variables by their representative/a constant *)
   let simplify_problem env {Pure. left ; right} =
@@ -316,8 +321,8 @@ module System = struct
     in
     {Pure. left = Array.map f left ; right = Array.map f right }
 
-  let add_problem get_index size {Pure. left; right} =
-    let equation = Array.make size 0 in
+  let add_problem get_index nb_atom {Pure. left; right} =
+    let equation = Array.make nb_atom 0 in
     let add dir r =
       let i = get_index r in
       equation.(i) <- equation.(i) + dir
@@ -346,56 +351,153 @@ module System = struct
     List.iter aux problems ;
     vars, !nb_vars, consts, !nb_consts
 
-  let array_of_map size neutral iter tbl =
-    let a = Array.make size neutral in
-    let f k i = a.(i) <- k in
-    iter f tbl
-
   let make problems =
     let vars, nb_vars, consts, nb_consts = make_mapping problems in
     let get_index = function
       | Pure.Constant p -> T.P.HMap.find consts p
       | Pure.Var v -> Var.HMap.find vars v + nb_consts
     in
-    let size = nb_vars + nb_consts in
+    let nb_atom = nb_vars + nb_consts in
 
-    let get =
-      let a = Array.make size (Pure.var @@ Var.inject 0) in
-      T.P.HMap.iter (fun k i -> a.(i) <- Pure.constant k) consts ;
-      Var.HMap.iter (fun k i -> a.(i+nb_consts) <- Pure.var k) vars ;
-      Array.get a
-    in
-    let range_const = 0, nb_consts - 1 in
+    let assoc_pure = Array.make nb_atom Pure.dummy in
+    T.P.HMap.iter (fun k i -> assoc_pure.(i) <- Pure.constant k) consts ;
+    Var.HMap.iter (fun k i -> assoc_pure.(i+nb_consts) <- Pure.var k) vars ;
+
+    let first_var = nb_consts in
     let system =
       Sequence.of_list problems
-      |> Sequence.map (add_problem get_index size)
-      |> Sequence.to_array
-      |> Solver.make
+      |> Sequence.map (add_problem get_index nb_atom)
+      |> Sequence.to_array (* TO OPTIM *)
     in
-    { get ; range_const ; system }
+    { nb_atom ; assoc_pure ; first_var ; system }
 
-  let solutions { range_const ; system ; _ } =
-    let rec cut_aux (i, j) sum solution =
-      if i <= j then
+  let solutions { first_var ; system ; _ } =
+    let rec cut_aux i stop sum solution =
+      if i < stop then
         let v = solution.(i) in
-        v > 1 || cut_aux (i+1, j) (sum+v) solution
+        v > 1 || cut_aux (i+1) stop (sum+v) solution
       else
         sum > 1
     in
-    let cut x = cut_aux range_const 0 x in
-    Solver.solve ~cut system
+    let cut x = cut_aux 0 first_var 0 x in
+    Solver.solve ~cut @@ Solver.make system
 end
 
-(** Extracted from cime3 ac_unif.ml *)
+(** See section 6.2 and 6.3 *)
 module Dioph2Sol = struct
+  (** In the following, [i] is always the row/solution index and [j] is always
+      the column/variable index. *)
 
-  let make_columns n = Array.make n Bitv.Default.zeros
-  let add_to_columns ~len cols i j =
-    cols.(i) <- Bitv.Default.add ~len cols.(i) j
+  (** Construction of the hullot tree to iterate through subsets. *)
 
-  (* let extract_from_solutions system_size sols =
-   *   let cols = make_columns system_size sols in
-   *   let f sol =
-   *     for i = 0 to system_size - 1 do
-   *       if *) 
+  let rec for_all2_range f a k stop =
+    k = stop || f a.(k) && for_all2_range f a (k+1) stop
+
+  let large_enough bitvars subset =
+    let f col = Bitv.Default.is_subset col subset in
+    for_all2_range f bitvars 0 @@ Array.length bitvars
+
+  let small_enough first_var bitvars bitset =
+    let f col = Bitv.Default.(is_singleton (bitset && col)) in
+    for_all2_range f bitvars 0 first_var
+
+  let iterate_subsets len system bitvars =
+    Hullot.Default.iter ~len
+      ~small:(small_enough system.System.first_var bitvars)
+      ~large:(large_enough bitvars)
+
+  (** Constructions of the mapping from solutions to variable/constant *)
+  let symbol_of_solution gen {System. first_var ; assoc_pure } sol =
+    (* By invariant, we know that solutions have at most one non-null
+       factor associated with a constant, so we scan them linearly, and if
+       non is found, we create a fresh variable. *)
+    assert (Array.length sol >= first_var) ;
+    let rec aux j =
+      if j >= first_var then Pure.var (Var.gen gen)
+      else if sol.(j) <> 0 then
+        assoc_pure.(j)
+      else aux (j+1)
+    in
+    aux 0
+
+  let symbols_of_solutions gen system solutions =
+    let pures = Array.make (CCVector.length solutions) Pure.dummy in
+    let f i sol = pures.(i) <- symbol_of_solution gen system sol in
+    CCVector.iteri f solutions;
+    pures
+
+  let extract_solutions stack nb_atom seq_solutions =
+    let nb_columns = nb_atom in
+    let bitvars = Array.make nb_columns Bitv.Default.empty in
+    let counter = ref 0 in
+    seq_solutions begin fun sol  ->
+      CCVector.push stack sol ;
+      let i = CCRef.get_then_incr counter in
+      for j = 0 to nb_columns - 1 do
+        if sol.(j) <> 0 then
+          bitvars.(j) <- Bitv.Default.add bitvars.(j) i
+        else ()
+      done;
+    end;
+    assert (!counter < Bitv.Default.capacity) ; (* Ensure we are not doing something silly with bitsets. *)
+    bitvars
+
+  (* TO OPTIM *)
+  let make_term buffer l =
+    CCVector.clear buffer;
+    let f (n, symb) =
+      for _ = 1 to n do CCVector.push buffer symb done
+    in
+    List.iter f l;
+    Pure.tuple @@ CCVector.to_array buffer
+
+  let unifier_of_subset vars solutions symbols subset =
+    assert (CCVector.length solutions = Array.length symbols);
+    let unifiers = Var.HMap.create (Array.length vars) in
+    let solutions = CCVector.unsafe_get_array solutions in
+    for i = 0 to Array.length symbols - 1 do
+      if Bitv.Default.mem i subset then
+        let sol = solutions.(i) in
+        assert (Array.length sol = Array.length vars) ;
+        let symb = symbols.(i) in
+        (* Fmt.epr "Checking %i:%a for subset %a@." i Pure.pp symb Bitv.Default.pp subset; *)
+        for j = 0 to Array.length vars - 1 do
+          match vars.(j) with
+          | Pure.Constant _ -> ()
+          | Pure.Var var ->
+            let multiplicity = sol.(j) in
+            Var.HMap.add_list unifiers var (multiplicity, symb)
+        done;
+    done;
+    (* Fmt.epr "Unif: %a@." Fmt.(iter_bindings ~sep:(unit" | ") Var.HMap.iter @@ pair ~sep:(unit" -> ") Var.pp @@ list ~sep:(unit",@ ") @@ pair int Pure.pp ) unifiers ; *)
+    let buffer = CCVector.create_with ~capacity:10 Pure.dummy in
+    let tbl = Var.HMap.create (Var.HMap.length unifiers) in
+    Var.HMap.iter
+      (fun k l ->
+         let pure_term = make_term buffer l in
+         Var.HMap.add tbl k pure_term)
+      unifiers ;
+    subset, tbl
+
+  (** Combine everything *)
+  let get_unifiers gen ({System. nb_atom; assoc_pure} as system) seq_solutions =
+    let stack_solutions = CCVector.create_with ~capacity:5 [||] in
+    let bitvars = extract_solutions stack_solutions nb_atom seq_solutions in
+    Fmt.epr "@[Bitvars: %a@]@." (Fmt.Dump.array Bitv.Default.pp) bitvars;
+    (* Fmt.epr "@[<v2>Sol stack:@ %a@]@." (CCVector.pp System.Solver.pp_sol) stack_solutions; *)
+    let symbols = symbols_of_solutions gen system stack_solutions in
+    Fmt.epr "@[Symbols: %a@]@." (Fmt.Dump.array Pure.pp) symbols;
+    let subsets = iterate_subsets (Array.length symbols) system bitvars in
+    Sequence.map
+      (unifier_of_subset assoc_pure stack_solutions symbols)
+      subsets
+
+  let pp_unifier ppf (subset, unif) =
+    Fmt.pf ppf "@[%a: { %a }@]"
+      Bitv.Default.pp subset
+      (Fmt.iter_bindings ~sep:(Fmt.unit "|@ ")
+         Var.HMap.iter
+         Fmt.(pair Var.pp Pure.pp_term)
+      )
+      unif
 end
