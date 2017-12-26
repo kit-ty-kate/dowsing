@@ -99,22 +99,25 @@ let unif s1 s2 =
   let t = Unix.gettimeofday () in
   let env = Unification.Env.make ~gen () in
   let Unification.Done = Unification.insert env [] t1 t2 in
-  let _t = rectime "Unification" t in
+  let t = rectime "Application of simplification rules" t in
   Format.printf "%a@.Occur-check: %b@."
     Unification.Env.pp env
     (Unification.occur_check env) ;
   let system = Unification.System.make env.pure_problems in
+  let t = rectime "Translation to diophantine equations" t in
   Format.printf "@[<2>System: @,%a@]@." Unification.System.pp system ;
   let sols = Unification.System.solutions system in
   Format.printf "@[<2>Solutions: @,%a@]@."
     (CCFormat.seq ~sep:Fmt.sp Unification.System.Solver.pp_sol)
     sols ;
+  let t = rectime "Resolution of diophantine equations" t in
   let unifiers = Unification.Dioph2Sol.get_unifiers gen system sols in
   (* Format.printf "@[<v2>Unifiers: @,%a@]@."
    *   (CCFormat.seq ~sep:Fmt.cut Unification.Dioph2Sol.pp_unifier)
    *   unifiers ; *)
   Fmt.pr "%i@." (Sequence.length unifiers) ;
-  ()
+  let t = rectime "Enumeration of the unifiers" t in
+  ignore t
 
 
 let file = "foo.db"

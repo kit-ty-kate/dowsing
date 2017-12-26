@@ -71,3 +71,4 @@ true: bin_annot
 
 # Better locations and loc in .mlis
 true: keep_locs
+true: optimize(3)
