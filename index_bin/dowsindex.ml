@@ -54,7 +54,7 @@ end
 
 let rectime s t =
   let t' = Unix.gettimeofday () in
-  Format.printf "%s: %f@\n@." s (t' -. t) ;
+  Format.printf "%s: %fs@\n@." s (t' -. t) ;
   t'
 
 let save ~file dirs =
@@ -103,6 +103,7 @@ let unif s1 s2 =
   Format.printf "%a@.Occur-check: %b@."
     Unification.Env.pp env
     (Unification.occur_check env) ;
+  let t = rectime "Occur-check" t in
   let system = Unification.System.make env.pure_problems in
   let t = rectime "Translation to diophantine equations" t in
   Format.printf "@[<2>System: @,%a@]@." Unification.System.pp system ;
@@ -112,10 +113,10 @@ let unif s1 s2 =
     sols ;
   let t = rectime "Resolution of diophantine equations" t in
   let unifiers = Unification.Dioph2Sol.get_unifiers gen system sols in
-  (* Format.printf "@[<v2>Unifiers: @,%a@]@."
-   *   (CCFormat.seq ~sep:Fmt.cut Unification.Dioph2Sol.pp_unifier)
-   *   unifiers ; *)
-  Fmt.pr "%i@." (Sequence.length unifiers) ;
+  Format.printf "@[<v2>Unifiers: @,%a@]@."
+    (CCFormat.seq ~sep:Fmt.cut Unification.Dioph2Sol.pp_unifier)
+    unifiers ;
+  (* Fmt.pr "%i@." (Sequence.length unifiers) ; *)
   let t = rectime "Enumeration of the unifiers" t in
   ignore t
 
