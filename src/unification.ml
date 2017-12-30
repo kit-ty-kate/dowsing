@@ -13,15 +13,13 @@ module Pure = struct
     | Var of Var.t
     | Constant of T.P.t
 
-  type term =
-    | Pure of t
-    | Tuple of t array
+  type term = t array
 
   let dummy = Constant (Longident.Lident "dummy")
   let var x = Var x
   let constant p = Constant p
-  let tuple p = Tuple p
-  let pure p = Pure p
+  let tuple p = p
+  let pure p = [|p|]
 
   type problem = {left : t array ; right : t array }
 
@@ -29,13 +27,22 @@ module Pure = struct
     | Var i -> Var.pp fmt i
     | Constant p -> T.P.pp fmt p
   let pp_term fmt = function
-    | Pure t -> pp fmt t
-    | Tuple t -> Fmt.pf fmt "@[<h>(%a)@]" Fmt.(array ~sep:(unit ",@ ") pp) t
+    | [|t|] -> pp fmt t
+    | t -> Fmt.pf fmt "@[<h>(%a)@]" Fmt.(array ~sep:(unit ",@ ") pp) t
 
   let pp_problem fmt {left ; right} =
     Fmt.pf fmt "%a = %a"
       Fmt.(array ~sep:(unit ",") pp) left
       Fmt.(array ~sep:(unit ",") pp) right
+
+  let as_typexpr p : Typexpr.t =
+    let a =
+      p
+      |> Sequence.of_array
+      |> Sequence.map (function Var v -> Typexpr.Var v | Constant c -> Typexpr.Constr (c, [||]))
+      |> Typexpr.NSet.of_seq
+    in
+    Typexpr.Tuple a
 end
 
 module Arrow = struct
@@ -60,6 +67,7 @@ module Stack = struct
   type elt =
     | Var of Var.t * Typexpr.t
     | Expr of Typexpr.t * Typexpr.t
+    | Subst of Var.t * Pure.term
 
   type t = elt list
   let pop = function
@@ -73,6 +81,7 @@ module Stack = struct
   let pp_problem fmt = function
     | Var (v, t) -> Fmt.pf fmt "%a = %a" Var.pp v Typexpr.pp t
     | Expr (t1, t2) -> Fmt.pf fmt "%a = %a" Typexpr.pp t1 Typexpr.pp t2
+    | Subst (v, p) -> Fmt.pf fmt "%a = %a" Var.pp v Pure.pp_term p
 
   let pp = Fmt.(vbox (list ~sep:cut pp_problem))
 end
@@ -118,7 +127,7 @@ module Env = struct
   let representative e x = representative_rec e.vars x
 
   let pp_binding fmt (x,t) =
-    Fmt.pf fmt "%a = %a"  Var.pp x  Typexpr.pp t
+    Fmt.pf fmt "@[%a = %a@]"  Var.pp x  Typexpr.pp t
 
   let pp fmt { vars ; pure_problems ; arrows } =
     Fmt.pf fmt "@[<v2>Quasi:@ %a@]@.@[<v2>Pure:@ %a@]@.@[<v2>Arrows:@ %a@]@."
@@ -133,6 +142,7 @@ let rec process env stack =
   match stack with
   | Stack.Expr (t1, t2) :: stack -> insert env stack t1 t2
   | Var (v, t) :: stack -> insert_var env stack v t
+  | Subst (v, p) :: stack -> insert_subst env stack v p
   | [] -> Done
 
 and insert env stack (t1 : T.t) (t2 : T.t) =
@@ -142,7 +152,7 @@ and insert env stack (t1 : T.t) (t2 : T.t) =
      when p is a type constructor.
   *)
   | Constr (p1, args1), Constr (p2, args2)
-    when T.P.compare p1 p2 = 0 ->
+    when T.P.compare p1 p2 = 0 && Array.length args1 = Array.length args2 ->
     let stack = Stack.push_array2 args1 args2 stack in
     process env stack
 
@@ -215,6 +225,10 @@ and insert_var env stack x s = match s with
     quasi_solved env stack x s
   | T.Var y ->
     non_proper env stack x y
+
+and insert_subst env stack x p = match p with
+  | [| Pure.Var v |] -> non_proper env stack x v
+  | _ -> quasi_solved env stack x (Pure.as_typexpr p) (* TO OPTIM *)
 
 (* Quasi solved equation
    'x = (s₁,...sₙ)
