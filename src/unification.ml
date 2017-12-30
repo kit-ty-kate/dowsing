@@ -58,6 +58,7 @@ module Arrow = struct
       Pure.pp ret1
       Fmt.(array ~sep:(unit ",") Pure.pp) arg2
       Pure.pp ret2
+
 end
 
 type representative = V of Var.t | E of Var.t * Typexpr.t
@@ -135,177 +136,6 @@ module Env = struct
       Fmt.(list ~sep:cut Pure.pp_problem) pure_problems
       Fmt.(list ~sep:cut Arrow.pp_problem) arrows
 end
-
-type d = Done
-
-let rec process env stack =
-  match stack with
-  | Stack.Expr (t1, t2) :: stack -> insert env stack t1 t2
-  | Var (v, t) :: stack -> insert_var env stack v t
-  | Subst (v, p) :: stack -> insert_subst env stack v p
-  | [] -> Done
-
-and insert env stack (t1 : T.t) (t2 : T.t) =
-  match t1, t2 with
-  (* Decomposition rule
-     (s₁,...,sₙ) p ≡ (t₁,...,tₙ) p  --> ∀i, sᵢ ≡ tᵢ
-     when p is a type constructor.
-  *)
-  | Constr (p1, args1), Constr (p2, args2)
-    when T.P.compare p1 p2 = 0 && Array.length args1 = Array.length args2 ->
-    let stack = Stack.push_array2 args1 args2 stack in
-    process env stack
-
-  (* Two arrows, we apply VA repeatedly
-     (a₁,...,aₙ) -> r ≡ (a'₁,...,a'ₙ) -> r'  -->  an equivalent arrow problem
-  *)
-  | Arrow (arg1, ret1), Arrow (arg2, ret2) ->
-    let stack, pure_arg1 = variable_abstraction_all env stack arg1 in
-    let stack, pure_ret1 = variable_abstraction env stack ret1 in
-    let stack, pure_arg2 = variable_abstraction_all env stack arg2 in
-    let stack, pure_ret2 = variable_abstraction env stack ret2 in
-    Env.push_arrow env (pure_arg1, pure_ret1) (pure_arg2, pure_ret2) ;
-    process env stack
-
-  (* Two tuples, we apply VA repeatedly
-     (s₁,...,sₙ) ≡ (t₁,...,tₙ) --> an equivalent pure problem
-  *)
-  | Tuple s, Tuple t ->
-    let stack, pure_s = variable_abstraction_all env stack s in
-    let stack, pure_t = variable_abstraction_all env stack t in
-    Env.push_pure env pure_s pure_t ;
-    process env stack
-
-  | Var v, t | t, Var v -> insert_var env stack v t
-
-  (* Clash rule
-     Terms are incompatible
-  *)
-  | Constr _, Constr _  (* if same constructor, already checked above *)
-  | (Constr _ | Tuple _ | Arrow _ | Unknown _),
-    (Constr _ | Tuple _ | Arrow _ | Unknown _)
-    -> fail ()
-
-  | _ -> assert false
-
-(* Repeated application of VA on an array of subexpressions. *)
-and variable_abstraction_all env stack a =
-  let r = ref stack in
-  let f x =
-    let stack, x = variable_abstraction env stack x in
-    r := stack ;
-    x
-  in
-  !r, Array.map f @@ T.NSet.as_array a
-
-(* rule VA/Variable Abstraction
-   Given a tuple, assign a variable to each subexpressions that is foreign
-   and push them on stack.
-
-   Returns the new state of the stack and the substituted expression.
-*)
-and variable_abstraction env stack t =
-  match t with
-  | T.Tuple _ -> assert false (* No nested tuple *)
-
-  (* Not a foreign subterm *)
-  | Var i -> stack, Pure.var i
-  | Unit -> stack, Pure.constant T.P.unit
-  | Constr (p, [||]) -> stack, Pure.constant p
-
-  (* It's a foreign subterm *)
-  | Arrow _ | Constr (_, _) | Unknown _ ->
-    let var = Env.gen env in
-    let stack = Stack.push_quasi_solved stack var t in
-    stack, Pure.var var
-
-and insert_var env stack x s = match s with
-  | T.Unit | T.Constr (_, [||])
-  | T.Tuple _ | T.Constr _ | T.Arrow _ | T.Unknown _ ->
-    quasi_solved env stack x s
-  | T.Var y ->
-    non_proper env stack x y
-
-and insert_subst env stack x p = match p with
-  | [| Pure.Var v |] -> non_proper env stack x v
-  | _ -> quasi_solved env stack x (Pure.as_typexpr p) (* TO OPTIM *)
-
-(* Quasi solved equation
-   'x = (s₁,...sₙ)
-   'x = (s₁,...sₙ) p
-*)
-and quasi_solved env stack x s =
-  match Env.get env x with
-  | None ->
-    Env.attach env x s ;
-    process env stack ;
-
-    (* Rule representative *)
-  | Some (T.Var y) ->
-    Env.attach env y s ;
-    process env stack
-
-  (* Rule AC-Merge *)
-  | Some t ->
-    (* TODO: use size of terms *)
-    insert env stack t s
-
-(* Non proper equations
-   'x ≡ 'y
-*)
-and non_proper env stack x y =
-  let xr = Env.representative env x
-  and yr = Env.representative env y
-  in
-  match xr, yr with
-  | V x', V y' when Var.equal x' y' ->
-    process env stack
-  | V x', (E (y',_) | V y')
-  | E (y',_), V x' ->
-    Env.attach env x' (T.Var y') ;
-    process env stack
-  | E (_, t), E (_, s) ->
-    (* TODO: use size of terms *)
-    insert env stack t s
-
-
-(** Checking for cycles *)
-
-(* Check for cycles *)
-let occur_check env =
-  let nb_preds = Var.HMap.create 17 in
-  let succs = Var.HMap.create 17 in
-  let nb_representatives = Var.HMap.length nb_preds in
-
-  let fill_nb_preds x ty =
-    let aux v =
-      Var.HMap.incr nb_preds v ;
-      Var.HMap.add_list succs x v ;
-    in
-    T.vars ty |> Sequence.iter aux
-  in
-  Var.Map.iter fill_nb_preds env.Env.vars ;
-
-  let rec loop n q = match q with
-    | _ when n = nb_representatives -> true
-    (* We eliminated all the variables: there are no cycles *)
-    | [] -> false (* there is a cycle *)
-    | x :: q ->
-      let aux l v =
-        Var.HMap.decr nb_preds v ;
-        let n = Var.HMap.find nb_preds v in
-        if n = 0 then v :: l
-        else l
-      in
-      let q = List.fold_left aux q (Var.HMap.find succs x) in
-      loop (n+1) q
-  in
-
-  let no_preds =
-    Var.HMap.fold (fun x p l -> if p = 0 then x :: l else l) nb_preds []
-  in
-  loop 0 no_preds
-
 
 (** Elementary AC-Unif *)
 
@@ -515,3 +345,199 @@ module Dioph2Sol = struct
       )
       unif
 end
+
+
+let solve_arrow_problems env {Arrow. arg1 ; arg2 ; ret1 ; ret2 } =
+  match ret1, ret2 with
+   | Pure.Var _,Pure.Var _
+   | Pure.Constant _,Pure.Var _
+   | Pure.Var _,Pure.Constant _
+   | Pure.Constant _,Pure.Constant _ -> (??)
+
+
+(** Main process *)
+
+type d = Done
+
+let rec process_stack env stack =
+  match stack with
+  | Stack.Expr (t1, t2) :: stack -> insert env stack t1 t2
+  | Var (v, t) :: stack -> insert_var env stack v t
+  | Subst (v, p) :: stack -> insert_subst env stack v p
+  | [] -> Done
+
+and insert env stack (t1 : T.t) (t2 : T.t) =
+  match t1, t2 with
+  (* Decomposition rule
+     (s₁,...,sₙ) p ≡ (t₁,...,tₙ) p  --> ∀i, sᵢ ≡ tᵢ
+     when p is a type constructor.
+  *)
+  | Constr (p1, args1), Constr (p2, args2)
+    when T.P.compare p1 p2 = 0 ->
+    let stack = Stack.push_array2 args1 args2 stack in
+    process_stack env stack
+
+  (* Two arrows, we apply VA repeatedly
+     (a₁,...,aₙ) -> r ≡ (a'₁,...,a'ₙ) -> r'  -->  an equivalent arrow problem
+  *)
+  | Arrow (arg1, ret1), Arrow (arg2, ret2) ->
+    let stack, pure_arg1 = variable_abstraction_all env stack arg1 in
+    let stack, pure_ret1 = variable_abstraction env stack ret1 in
+    let stack, pure_arg2 = variable_abstraction_all env stack arg2 in
+    let stack, pure_ret2 = variable_abstraction env stack ret2 in
+    Env.push_arrow env (pure_arg1, pure_ret1) (pure_arg2, pure_ret2) ;
+    process_stack env stack
+
+  (* Two tuples, we apply VA repeatedly
+     (s₁,...,sₙ) ≡ (t₁,...,tₙ) --> an equivalent pure problem
+  *)
+  | Tuple s, Tuple t ->
+    let stack, pure_s = variable_abstraction_all env stack s in
+    let stack, pure_t = variable_abstraction_all env stack t in
+    Env.push_pure env pure_s pure_t ;
+    process_stack env stack
+
+  | Var v, t | t, Var v -> insert_var env stack v t
+
+  (* Clash rule
+     Terms are incompatible
+  *)
+  | Constr _, Constr _  (* if same constructor, already checked above *)
+  | (Constr _ | Tuple _ | Arrow _ | Unknown _),
+    (Constr _ | Tuple _ | Arrow _ | Unknown _)
+    -> fail ()
+
+  | _ -> assert false
+
+(* Repeated application of VA on an array of subexpressions. *)
+and variable_abstraction_all env stack a =
+  let r = ref stack in
+  let f x =
+    let stack, x = variable_abstraction env stack x in
+    r := stack ;
+    x
+  in
+  !r, Array.map f @@ T.NSet.as_array a
+
+(* rule VA/Variable Abstraction
+   Given a tuple, assign a variable to each subexpressions that is foreign
+   and push them on stack.
+
+   Returns the new state of the stack and the substituted expression.
+*)
+and variable_abstraction env stack t =
+  match t with
+  | T.Tuple _ -> assert false (* No nested tuple *)
+
+  (* Not a foreign subterm *)
+  | Var i -> stack, Pure.var i
+  | Unit -> stack, Pure.constant T.P.unit
+  | Constr (p, [||]) -> stack, Pure.constant p
+
+  (* It's a foreign subterm *)
+  | Arrow _ | Constr (_, _) | Unknown _ ->
+    let var = Env.gen env in
+    let stack = Stack.push_quasi_solved stack var t in
+    stack, Pure.var var
+
+and insert_var env stack x s = match s with
+  | T.Unit | T.Constr (_, [||])
+  | T.Tuple _ | T.Constr _ | T.Arrow _ | T.Unknown _ ->
+    quasi_solved env stack x s
+  | T.Var y ->
+    non_proper env stack x y
+
+and insert_subst env stack x p = match p with
+  | [| Pure.Var v |] -> non_proper env stack x v
+  | _ -> quasi_solved env stack x (Pure.as_typexpr p) (* TO OPTIM *)
+
+(* Quasi solved equation
+   'x = (s₁,...sₙ)
+   'x = (s₁,...sₙ) p
+*)
+and quasi_solved env stack x s =
+  match Env.get env x with
+  | None ->
+    Env.attach env x s ;
+    process_stack env stack ;
+
+    (* Rule representative *)
+  | Some (T.Var y) ->
+    Env.attach env y s ;
+    process_stack env stack
+
+  (* Rule AC-Merge *)
+  | Some t ->
+    (* TODO: use size of terms *)
+    insert env stack t s
+
+(* Non proper equations
+   'x ≡ 'y
+*)
+and non_proper env stack x y =
+  let xr = Env.representative env x
+  and yr = Env.representative env y
+  in
+  match xr, yr with
+  | V x', V y' when Var.equal x' y' ->
+    process_stack env stack
+  | V x', (E (y',_) | V y')
+  | E (y',_), V x' ->
+    Env.attach env x' (T.Var y') ;
+    process_stack env stack
+  | E (_, t), E (_, s) ->
+    (* TODO: use size of terms *)
+    insert env stack t s
+
+
+let rec process_arrow_problems env = match env.Env.arrows with
+  | [] -> process_pure_problems env
+  | {Arrow. arg1 ; arg2 ; ret1 ; ret2 } :: arrows ->
+    let pure_problems =
+      {Pure.left = [|ret1|]; right = [|ret2|]} ::
+      {Pure.left = arg1 ; right = arg2} ::
+      env.pure_problems
+    in
+    process_arrow_problems { env with pure_problems; arrows }
+
+and process_pure_problems env =
+  match env.Env.pure_problems with
+  | [] -> Done
+  | {Pure. left ; right} :: pure_problems ->
+    ()
+
+(** Checking for cycles *)
+(* TO OPTIM/MEASURE *)
+let occur_check env =
+  let nb_preds = Var.HMap.create 17 in
+  let succs = Var.HMap.create 17 in
+  let nb_representatives = Var.HMap.length nb_preds in
+
+  let fill_nb_preds x ty =
+    let aux v =
+      Var.HMap.incr nb_preds v ;
+      Var.HMap.add_list succs x v ;
+    in
+    T.vars ty |> Sequence.iter aux
+  in
+  Var.Map.iter fill_nb_preds env.Env.vars ;
+
+  let rec loop n q = match q with
+    | _ when n = nb_representatives -> true
+    (* We eliminated all the variables: there are no cycles *)
+    | [] -> false (* there is a cycle *)
+    | x :: q ->
+      let aux l v =
+        Var.HMap.decr nb_preds v ;
+        let n = Var.HMap.find nb_preds v in
+        if n = 0 then v :: l
+        else l
+      in
+      let q = List.fold_left aux q (Var.HMap.find succs x) in
+      loop (n+1) q
+  in
+
+  let no_preds =
+    Var.HMap.fold (fun x p l -> if p = 0 then x :: l else l) nb_preds []
+  in
+  loop 0 no_preds
