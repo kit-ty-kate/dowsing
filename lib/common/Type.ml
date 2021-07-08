@@ -300,9 +300,7 @@ end
 
 let var v = Var v
 
-let constr lid = function
-  | [||] when lid = LongIdent.unit -> Tuple NSet.empty
-  | params -> Constr (lid, params)
+let constr lid params = Constr (lid, params)
 
 let arrow param ret =
   match param, ret with
