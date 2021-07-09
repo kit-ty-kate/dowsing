@@ -21,13 +21,6 @@ let pos_tests = [
   "((a * b) * c) f", "(a * (b * c)) f" ;
   "(a * b) * c -> d", "a * (b * c) -> d" ;
   "a -> ((b * c) * d) f", "a -> (b * (c * d)) f" ;
-  (* ass-0 *)
-  "unit * a", "a" ;
-  "a * unit", "a" ;
-  "unit * a * b", "a * b" ;
-  "(unit * a) f", "a f" ;
-  "unit * a -> b", "a -> b" ;
-  "a -> unit * b", "a -> b" ;
   (* cur-2 *)
   "a * b -> c", "a -> b -> c" ;
   "a * b * c -> d", "a -> b -> c -> d" ;

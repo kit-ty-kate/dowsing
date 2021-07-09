@@ -519,12 +519,6 @@ Some initial basic tests.
   eq:('a -> 'a -> bool) -> 'a -> ('a * 'b) t -> ('a * 'b) t
   CCListLabels.remove_assoc :
   eq:('a -> 'a -> bool) -> 'a -> ('a * 'b) t -> ('a * 'b) t
-  CCSeq.Traverse.fold_m : ('b -> 'a -> 'b M.t) -> 'b -> 'a t -> 'b M.t
-  CCList.Traverse.fold_m : ('b -> 'a -> 'b M.t) -> 'b -> 'a t -> 'b M.t
-  CCListLabels.Traverse.fold_m :
-  f:('b -> 'a -> 'b M.t) -> init:'b -> 'a t -> 'b M.t
-  CCResult.Traverse.fold_m :
-  ('b -> 'a -> 'b M.t) -> 'b -> ('a, 'err) t -> 'b M.t
   CCHashtbl.update :
   ('a, 'b) Hashtbl.t -> f:('a -> 'b option -> 'b option) -> k:'a -> unit
   CCHashtbl.Poly.update :
@@ -539,6 +533,12 @@ Some initial basic tests.
   CCArrayLabels.sort_generic :
   (module MONO_ARRAY with type elt = 'elt and type t = 'arr) ->
   cmp:('elt -> 'elt -> int) -> 'arr -> unit
+  CCSeq.Traverse.fold_m : ('b -> 'a -> 'b M.t) -> 'b -> 'a t -> 'b M.t
+  CCList.Traverse.fold_m : ('b -> 'a -> 'b M.t) -> 'b -> 'a t -> 'b M.t
+  CCListLabels.Traverse.fold_m :
+  f:('b -> 'a -> 'b M.t) -> init:'b -> 'a t -> 'b M.t
+  CCResult.Traverse.fold_m :
+  ('b -> 'a -> 'b M.t) -> 'b -> ('a, 'err) t -> 'b M.t
   CCPair.(&&&) : ('a -> 'b) -> ('a -> 'c) -> 'a -> 'b * 'c
   CCList.fold_map :
   ('acc -> 'a -> 'acc * 'b) -> 'acc -> 'a list -> 'acc * 'b list
